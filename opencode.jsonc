@@ -1,0 +1,16 @@
+{
+  // Schema for editor validation and autocomplete.
+  "$schema": "https://opencode.ai/config.json",
+
+  // Default model for this project.
+  "model": "opencode/deepseek-v4.1-flash-free",
+
+  "permissions": [
+    // Ask for approval before pushing to a remote.
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "ask",
+    },
+  ],
+}
