@@ -1,8 +1,9 @@
-"""Sample the VL53L1X distance sensor and print the samples as a table.
+"""Sample the distance sensor and print the samples as a table.
 
-Third-party package: VL53L1X (Pimoroni), imported lazily by
-``sensors.vl53l1x_sensor``. It is only available where the sensor hardware
-and library are installed (e.g. a Raspberry Pi).
+The concrete sensor is chosen with ``--platform``: ``pc`` uses
+``sensors.dummy.DummySensor`` (no hardware), ``rpi`` uses the VL53L1X ToF
+sensor via ``sensors.vl53l1x_sensor``. The Pimoroni ``VL53L1X`` package is
+imported lazily, so the PC path works without it installed.
 """
 
 import argparse
@@ -12,7 +13,7 @@ import time
 from pathlib import Path
 
 from sensors.base import DistanceSensor
-from sensors.vl53l1x_sensor import VL53L1XSensor
+from sensors.factory import create_sensor
 
 DEFAULT_DURATION_S = 5.0
 LOG_PATH = Path(__file__).resolve().with_suffix(".log")
@@ -23,7 +24,13 @@ logger = logging.getLogger(__name__)
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the command-line parser for this script."""
     parser = argparse.ArgumentParser(
-        description="Sample the VL53L1X distance sensor and print the samples as a table.",
+        description="Sample the distance sensor and print the samples as a table.",
+    )
+    parser.add_argument(
+        "--platform",
+        choices=("pc", "rpi"),
+        default="pc",
+        help="sensor backend: 'pc' uses a dummy sensor, 'rpi' uses the VL53L1X (default: pc)",
     )
     parser.add_argument(
         "-d",
@@ -123,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.debug("starting with arguments: %s", args)
 
     try:
-        sensor = VL53L1XSensor(i2c_bus=args.i2c_bus, i2c_address=args.i2c_address)
+        sensor = create_sensor(args)
         samples = collect_samples(sensor, args.duration)
     except Exception as exc:  # noqa: BLE001 - report any hardware/driver failure
         logger.exception("sampling failed")
