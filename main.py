@@ -12,6 +12,7 @@ sensor, which is useful for analysing a saved ``log.txt`` on a PC.
 Third-party package: VL53L1X (Pimoroni), imported lazily by
 ``sensors.vl53l1x_sensor``. It is only available where the sensor hardware
 and library are installed (e.g. a Raspberry Pi).
+
 """
 
 import argparse
