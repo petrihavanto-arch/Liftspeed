@@ -7,9 +7,9 @@
 
   "permissions": [
     // Ask for approval before pushing to a remote.
-    {      "action": "shell", "resource": "git push *","effect": "ask",},
+    { "action": "shell", "resource": "git push *","effect": "ask"},
     { "action": "shell", "resource": "*", "effect": "ask" },
     { "action": "shell", "resource": "git status *", "effect": "allow" },
-    { "action": "shell", "resource": "git diff *", "effect": "allow" },
-  ],
+    { "action": "shell", "resource": "git diff *", "effect": "allow" }
+  ]
 }

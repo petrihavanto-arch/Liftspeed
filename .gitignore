@@ -1,3 +1,7 @@
 .idea/
 __pycache__
 sensors/__pycache__
+*.log
+*.lock
+log.txt
+.idea/liftspeed.iml
