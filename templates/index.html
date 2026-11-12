@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Liftspeed</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #1c2733;
+      --muted: #5b6b7b;
+      --border: #d7dee6;
+      --accent: #1f6feb;
+      --danger: #b42318;
+      --danger-bg: #fdecea;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10161d;
+        --panel: #18212b;
+        --text: #e6edf3;
+        --muted: #9aa8b6;
+        --border: #2c3946;
+        --accent: #4c8dff;
+        --danger: #ffb4ab;
+        --danger-bg: #3a1a17;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px 16px 48px;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    p.subtitle { margin: 0 0 20px; color: var(--muted); }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    #toggle {
+      min-width: 130px;
+      padding: 12px 24px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #toggle:hover:not(:disabled) { filter: brightness(1.08); }
+    #toggle.stop { background: var(--danger); }
+    #toggle:disabled { opacity: 0.6; cursor: wait; }
+    #status { color: var(--muted); font-variant-numeric: tabular-nums; }
+    #status .running { color: var(--accent); font-weight: 600; }
+    .error {
+      margin-top: 16px;
+      padding: 12px 16px;
+      border: 1px solid var(--danger);
+      border-radius: 8px;
+      background: var(--danger-bg);
+      color: var(--danger);
+      white-space: pre-wrap;
+    }
+    .error[hidden] { display: none; }
+    section {
+      margin-top: 24px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    section > h2 {
+      margin: 0;
+      padding: 12px 16px;
+      font-size: 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    section > h2 span { color: var(--muted); font-weight: 400; }
+    .table-wrap { max-height: 420px; overflow: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+    th, td {
+      padding: 7px 12px;
+      text-align: right;
+      white-space: nowrap;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      color: var(--muted);
+      font-weight: 600;
+      z-index: 1;
+    }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .empty { padding: 16px; color: var(--muted); }
+    .empty[hidden] { display: none; }
+    #results[hidden] { display: none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Liftspeed</h1>
+  <p class="subtitle">Start sampling, lift the sensor target, then stop to see the samples and reps.</p>
+
+  <div class="controls">
+    <button id="toggle" type="button">Start</button>
+    <div id="status">Ready.</div>
+  </div>
+
+  <div id="error" class="error" hidden></div>
+
+  <div id="results" hidden>
+    <section>
+      <h2>Reps <span id="rep-summary"></span></h2>
+      <div class="table-wrap">
+        <table id="reps-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="reps-empty" class="empty" hidden>No reps detected.</div>
+    </section>
+
+    <section id="samples-section">
+      <h2>Samples <span id="sample-summary"></span></h2>
+      <div class="table-wrap">
+        <table id="samples-table">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="samples-empty" class="empty" hidden>No samples collected.</div>
+    </section>
+  </div>
+</main>
+
+<script>
+  "use strict";
+
+  const SHOW_SAMPLES = {{ show_samples|tojson }};
+  const SHOW_DOWN_DATA = {{ show_down_data|tojson }};
+
+  const button = document.getElementById("toggle");
+  const statusEl = document.getElementById("status");
+  const errorEl = document.getElementById("error");
+  const resultsEl = document.getElementById("results");
+
+  if (!SHOW_SAMPLES) {
+    document.getElementById("samples-section").hidden = true;
+  }
+
+  let running = false;
+  let busy = false;
+  let pollTimer = null;
+
+  const REP_COLUMNS = [
+    { key: "rep", label: "rep", digits: 0, plain: true },
+    { key: "up_start_s", label: "up_start_s", digits: 4 },
+    { key: "up_end_s", label: "up_end_s", digits: 4 },
+    { key: "up_t10_s", label: "up_t10_s", digits: 4 },
+    { key: "up_t90_s", label: "up_t90_s", digits: 4 },
+    { key: "up_amplitude_m", label: "up_amplitude_m", digits: 3 },
+    { key: "up_speed_m_s", label: "up_speed_m_s", digits: 3 },
+    { key: "down_start_s", label: "down_start_s", digits: 4 },
+    { key: "down_end_s", label: "down_end_s", digits: 4 },
+    { key: "down_t90_s", label: "down_t90_s", digits: 4 },
+    { key: "down_t10_s", label: "down_t10_s", digits: 4 },
+    { key: "down_amplitude_m", label: "down_amplitude_m", digits: 3 },
+    { key: "down_speed_m_s", label: "down_speed_m_s", digits: 3 },
+  ];
+
+  const REP_COLUMNS_TO_SHOW = SHOW_DOWN_DATA
+    ? REP_COLUMNS
+    : REP_COLUMNS.filter((column) => !column.key.startsWith("down_"));
+
+  function formatCell(value, column) {
+    if (value === null || value === undefined) return "\u2013";
+    if (column.plain) return String(value);
+    return Number(value).toFixed(column.digits);
+  }
+
+  function renderTable(table, columns, rows) {
+    const thead = table.querySelector("thead");
+    const tbody = table.querySelector("tbody");
+    thead.replaceChildren();
+    tbody.replaceChildren();
+
+    const headRow = document.createElement("tr");
+    for (const column of columns) {
+      const th = document.createElement("th");
+      th.textContent = column.label;
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const column of columns) {
+        const td = document.createElement("td");
+        td.textContent = formatCell(row[column.key], column);
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  }
+
+  function showError(message) {
+    if (!message) {
+      errorEl.hidden = true;
+      errorEl.textContent = "";
+      return;
+    }
+    errorEl.hidden = false;
+    errorEl.textContent = message;
+  }
+
+  function updateStatus(status) {
+    if (status.running) {
+      const seconds = Number(status.elapsed_s).toFixed(1);
+      statusEl.innerHTML =
+        '<span class="running">Sampling\u2026</span> ' +
+        seconds + " s, " + status.sample_count + " samples";
+    } else if (status.has_result) {
+      statusEl.textContent = "Stopped.";
+    } else {
+      statusEl.textContent = "Ready.";
+    }
+    showError(status.error);
+  }
+
+  function setRunning(next) {
+    running = next;
+    button.textContent = next ? "Stop" : "Start";
+    button.classList.toggle("stop", next);
+  }
+
+  function renderResult(result) {
+    resultsEl.hidden = false;
+    showError(result.error);
+
+    const reps = result.reps || [];
+    const samples = result.samples || [];
+    const repRows = reps.map((rep, index) => ({ ...rep, rep: index + 1 }));
+
+    renderTable(
+      document.getElementById("reps-table"),
+      REP_COLUMNS_TO_SHOW,
+      repRows
+    );
+    document.getElementById("reps-empty").hidden = reps.length > 0;
+    document.getElementById("rep-summary").textContent =
+      reps.length === 1 ? "1 rep" : reps.length + " reps";
+
+    if (!SHOW_SAMPLES) {
+      return;
+    }
+
+    const sampleColumns = [
+      { key: "time_s", label: "time_s", digits: 4 },
+      { key: "distance_m", label: "distance_m", digits: 3 },
+    ];
+    const sampleRows = samples.map(([t, distance]) => ({
+      time_s: t,
+      distance_m: distance,
+    }));
+    renderTable(
+      document.getElementById("samples-table"),
+      sampleColumns,
+      sampleRows
+    );
+    document.getElementById("samples-empty").hidden = samples.length > 0;
+    document.getElementById("sample-summary").textContent =
+      samples.length === 1 ? "1 sample" : samples.length + " samples";
+  }
+
+  function clearResults() {
+    resultsEl.hidden = true;
+    showError(null);
+  }
+
+  async function request(url, options) {
+    const response = await fetch(url, options);
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (err) {
+      // fall through to the status message
+    }
+    if (!response.ok) {
+      throw new Error(data.error || "request failed (" + response.status + ")");
+    }
+    return data;
+  }
+
+  async function poll() {
+    if (!running) return;
+    try {
+      const status = await request("/api/status");
+      updateStatus(status);
+      if (!status.running) {
+        setRunning(false);
+        // The worker stopped by itself (for example a sensor failure); the
+        // stop endpoint finalises the run and returns the collected data.
+        const result = await request("/api/stop", { method: "POST" });
+        renderResult(result);
+        return;
+      }
+    } catch (err) {
+      showError(err.message);
+    }
+    pollTimer = setTimeout(poll, 500);
+  }
+
+  button.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    button.disabled = true;
+    try {
+      if (!running) {
+        clearTimeout(pollTimer);
+        clearResults();
+        const status = await request("/api/start", { method: "POST" });
+        updateStatus(status);
+        setRunning(status.running);
+        if (status.running) {
+          pollTimer = setTimeout(poll, 500);
+        }
+      } else {
+        clearTimeout(pollTimer);
+        const result = await request("/api/stop", { method: "POST" });
+        setRunning(false);
+        const status = await request("/api/status");
+        updateStatus(status);
+        renderResult(result);
+      }
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  });
+
+  async function init() {
+    try {
+      const status = await request("/api/status");
+      updateStatus(status);
+      if (status.running) {
+        setRunning(true);
+        pollTimer = setTimeout(poll, 500);
+      } else if (status.has_result) {
+        const result = await request("/api/stop", { method: "POST" });
+        renderResult(result);
+      }
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>

@@ -5,3 +5,4 @@ sensors/__pycache__
 *.lock
 log.txt
 .idea/liftspeed.iml
+*.pyc

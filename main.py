@@ -25,10 +25,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from queue import Empty
 
-from sensors.base import DistanceSensor
-from sensors.vl53l1x_sensor import VL53L1XSensor
+import sampler
 
 DEFAULT_DURATION_S = 5.0
 DEFAULT_SMOOTH_WINDOW = 3
@@ -173,6 +171,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=f"sampling duration in seconds (default: {DEFAULT_DURATION_S})",
     )
     parser.add_argument(
+        "--platform",
+        choices=("rpi", "pc"),
+        default="rpi",
+        help=(
+            "sensor backend: 'rpi' for the VL53L1X, 'pc' for the dummy "
+            "sensor (default: rpi)"
+        ),
+    )
+    parser.add_argument(
         "--i2c-bus",
         type=int,
         default=1,
@@ -229,87 +236,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_logging(debug: bool) -> None:
-    """Log DEBUG messages to LOG_PATH when --debug is given.
-
-    Console output is deliberately left untouched, so -d only adds a log file.
-    """
-    if not debug:
-        return
-    handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    root.addHandler(handler)
-
-
-def sample_worker(
-    duration_s: float,
-    i2c_bus: int,
-    i2c_address: int,
-    stop_event,
-    sample_queue,
-    debug: bool,
-) -> None:
-    """Background-process entry point: sample until the deadline or a stop request.
-
-    Samples are streamed to `sample_queue` as ("sample", t, distance_m, valid)
-    tuples; a failure is reported as a single ("error", message) tuple.
-    """
-    configure_logging(debug)
-    logger.debug("sampler process starting")
-
-    sensor = None
-    try:
-        sensor = VL53L1XSensor(i2c_bus=i2c_bus, i2c_address=i2c_address)
-        sensor.open()
-        deadline = time.monotonic() + duration_s
-        while not stop_event.is_set() and time.monotonic() < deadline:
-            reading = sensor.read()
-            sample_queue.put(
-                ("sample", reading.t, reading.distance_m, reading.valid)
-            )
-            logger.debug(
-                "sample t=%.4f s distance=%.3f m valid=%s",
-                reading.t,
-                reading.distance_m,
-                reading.valid,
-            )
-    except Exception as exc:  # noqa: BLE001 - report any hardware/driver failure
-        logger.exception("sampling failed")
-        sample_queue.put(("error", str(exc)))
-    finally:
-        if sensor is not None:
-            try:
-                sensor.close()
-            except Exception:  # noqa: BLE001 - never mask the original failure
-                logger.exception("failed to close sensor")
-    logger.debug("sampler process finished")
-
-
-def drain_queue(
-    sample_queue, samples: list[tuple[float, float]]
-) -> str | None:
-    """Move all queued samples into `samples`; return the first error seen."""
-    error = None
-    while True:
-        try:
-            item = sample_queue.get_nowait()
-        except Empty:
-            return error
-        kind = item[0]
-        if kind == "sample":
-            _, t, distance_m, valid = item
-            if valid:
-                samples.append((t, distance_m))
-            else:
-                logger.debug("skipping invalid sample at t=%.4f s", t)
-        elif kind == "error":
-            error = item[1]
-
-
 def collect_samples(
     args: argparse.Namespace,
 ) -> tuple[list[tuple[float, float]], str | None, bool, int | None]:
@@ -318,7 +244,7 @@ def collect_samples(
     sample_queue = ctx.Queue()
     stop_event = ctx.Event()
     process = ctx.Process(
-        target=sample_worker,
+        target=sampler.sample_worker,
         args=(
             args.duration,
             args.i2c_bus,
@@ -326,6 +252,8 @@ def collect_samples(
             stop_event,
             sample_queue,
             args.debug,
+            args.platform,
+            LOG_PATH,
         ),
         name="vl53l1x-sampler",
     )
@@ -348,7 +276,7 @@ def collect_samples(
                 if keyboard.poll(0.05):
                     logger.debug("spacebar pressed; requesting sampler stop")
                     break
-                error = drain_queue(sample_queue, samples) or error
+                error = sampler.drain_queue(sample_queue, samples) or error
     except KeyboardInterrupt:
         interrupted = True
         logger.debug("interrupt received; requesting sampler stop")
@@ -356,7 +284,7 @@ def collect_samples(
         stop_event.set()
         process.join()
 
-    error = drain_queue(sample_queue, samples) or error
+    error = sampler.drain_queue(sample_queue, samples) or error
     logger.debug(
         "sampler finished (exit code %s) with %d samples",
         process.exitcode,
@@ -753,7 +681,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.min_rep_duration <= 0:
         parser.error("--min-rep-duration must be greater than zero")
 
-    configure_logging(args.debug)
+    sampler.configure_logging(args.debug, LOG_PATH)
     logger.debug("starting with arguments: %s", args)
 
     if args.file is not None:
