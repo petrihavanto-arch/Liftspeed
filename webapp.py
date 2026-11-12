@@ -6,8 +6,10 @@ page shows the elapsed time and sample count; after stopping it shows the
 collected samples and the per-repetition analysis.
 
 The sampler itself is the same background process used by ``main.py``. The
-server is meant for local, single-user use and keeps one sampler at a time in
-memory; it is not a multi-client or production deployment.
+server keeps one sampler at a time in memory; it is not a multi-client or
+production deployment. By default it binds to all interfaces (``0.0.0.0``),
+so the page can be opened from other machines on the network; pass
+``--host 127.0.0.1`` to restrict it to the local machine.
 
 Third-party package: Flask. The sensor dependency is the same as in
 ``main.py`` (VL53L1X on a Raspberry Pi); use ``--platform pc`` for the dummy
@@ -27,7 +29,7 @@ from flask import Flask, jsonify, render_template
 import main
 
 WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
 
 logger = logging.getLogger(__name__)
@@ -224,7 +226,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host",
         default=DEFAULT_HOST,
-        help=f"address to bind (default: {DEFAULT_HOST})",
+        help=(
+            "address to bind; 0.0.0.0 accepts connections from other "
+            f"machines (default: {DEFAULT_HOST})"
+        ),
     )
     parser.add_argument(
         "--port",
@@ -302,6 +307,12 @@ def main_cli(argv: list[str] | None = None) -> int:
     app = create_app(manager)
 
     print(f"Serving on http://{args.host}:{args.port}", flush=True)
+    if args.host in ("0.0.0.0", "::"):
+        print(
+            "Reachable from other machines via this machine's network "
+            "address.",
+            flush=True,
+        )
     # The reloader would start a second sampler manager in a child process.
     # -d only adds our log file; Flask's debugger stays off.
     app.run(host=args.host, port=args.port, use_reloader=False)
