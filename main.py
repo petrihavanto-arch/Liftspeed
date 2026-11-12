@@ -3,8 +3,9 @@
 The sampler runs for the duration given with ``--duration`` (default 5 s) or
 until Space is pressed in the terminal, whichever comes first. The collected
 samples are printed as a table once the sampler has stopped, followed by a
-per-repetition analysis: every upward movement ("rep") is detected and its
-average speed is measured over the 10%-90% part of that movement.
+per-repetition analysis: every upward movement is a rep, the down movement
+after it is included when present, and the average speed of each phase is
+measured over its 10%-90% part.
 
 With ``-f/--file`` the samples are read from an existing table instead of the
 sensor, which is useful for analysing a saved ``log.txt`` on a PC.
@@ -25,9 +26,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
+from types import SimpleNamespace
 
-from sensors.base import DistanceSensor
-from sensors.vl53l1x_sensor import VL53L1XSensor
+from sensors.factory import create_sensor
 
 DEFAULT_DURATION_S = 5.0
 DEFAULT_SMOOTH_WINDOW = 3
@@ -42,18 +43,27 @@ logger.addHandler(logging.NullHandler())
 
 @dataclass
 class Rep:
-    """One upward movement and its speed over the 10%-90% window.
+    """One repetition: an upward movement and, when present, the down movement.
 
-    ``start_s``/``end_s`` are the bottom and top of the whole up-phase;
-    ``t10_s``/``t90_s`` delimit the part of it used for the average speed.
+    The up-phase runs from a bottom to a top. The down-phase, when the
+    recording contains one, runs from that top to the next bottom; without a
+    following down-phase it is ``None`` and the rep is still valid.
+    ``*_t10_s``/``*_t90_s`` delimit the part of each phase used for its
+    average speed (10%-90% going up, 90%-10% going down).
     """
 
-    start_s: float
-    end_s: float
-    t10_s: float
-    t90_s: float
-    amplitude_m: float
-    avg_speed_m_s: float
+    up_start_s: float
+    up_end_s: float
+    up_t10_s: float
+    up_t90_s: float
+    up_amplitude_m: float
+    up_speed_m_s: float
+    down_start_s: float | None = None
+    down_end_s: float | None = None
+    down_t90_s: float | None = None
+    down_t10_s: float | None = None
+    down_amplitude_m: float | None = None
+    down_speed_m_s: float | None = None
 
 
 class KeyboardWatcher:
@@ -134,8 +144,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Sample the VL53L1X distance sensor in a background process, "
-            "print the samples as a table, and report the average speed of "
-            "each detected upward movement (rep)."
+            "print the samples as a table, and report the average up and down "
+            "speed of each detected repetition (up movement, plus the down "
+            "movement when present)."
         ),
     )
     parser.add_argument(
@@ -160,6 +171,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DURATION_S,
         metavar="SECONDS",
         help=f"sampling duration in seconds (default: {DEFAULT_DURATION_S})",
+    )
+    parser.add_argument(
+        "--platform",
+        choices=("rpi", "pc"),
+        default="rpi",
+        help=(
+            "sensor backend: 'rpi' for the VL53L1X, 'pc' for the dummy "
+            "sensor (default: rpi)"
+        ),
     )
     parser.add_argument(
         "--i2c-bus",
@@ -201,8 +221,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_REP_MM,
         metavar="MM",
         help=(
-            "smallest upward movement counted as a rep, in millimetres "
-            f"(default: {DEFAULT_MIN_REP_MM:g})"
+            "smallest up-phase counted as a rep, and smallest down-phase "
+            f"reported, in millimetres (default: {DEFAULT_MIN_REP_MM:g})"
         ),
     )
     parser.add_argument(
@@ -211,21 +231,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MIN_REP_DURATION_S,
         metavar="SECONDS",
         help=(
-            "shortest upward movement counted as a rep, in seconds "
+            "shortest up-phase of a rep, in seconds "
             f"(default: {DEFAULT_MIN_REP_DURATION_S:g})"
         ),
     )
     return parser
 
 
-def configure_logging(debug: bool) -> None:
-    """Log DEBUG messages to LOG_PATH when --debug is given.
+def configure_logging(debug: bool, log_path: Path = LOG_PATH) -> None:
+    """Log DEBUG messages to `log_path` when --debug is given.
 
     Console output is deliberately left untouched, so -d only adds a log file.
     """
     if not debug:
         return
-    handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
@@ -241,18 +261,26 @@ def sample_worker(
     stop_event,
     sample_queue,
     debug: bool,
+    platform: str = "rpi",
+    log_path: Path = LOG_PATH,
 ) -> None:
     """Background-process entry point: sample until the deadline or a stop request.
 
     Samples are streamed to `sample_queue` as ("sample", t, distance_m, valid)
     tuples; a failure is reported as a single ("error", message) tuple.
     """
-    configure_logging(debug)
+    configure_logging(debug, log_path)
     logger.debug("sampler process starting")
 
     sensor = None
     try:
-        sensor = VL53L1XSensor(i2c_bus=i2c_bus, i2c_address=i2c_address)
+        sensor = create_sensor(
+            SimpleNamespace(
+                platform=platform,
+                i2c_bus=i2c_bus,
+                i2c_address=i2c_address,
+            )
+        )
         sensor.open()
         deadline = time.monotonic() + duration_s
         while not stop_event.is_set() and time.monotonic() < deadline:
@@ -315,6 +343,7 @@ def collect_samples(
             stop_event,
             sample_queue,
             args.debug,
+            args.platform,
         ),
         name="vl53l1x-sampler",
     )
@@ -486,6 +515,30 @@ def crossing_time(
     return times[end_index]
 
 
+def descending_crossing_time(
+    times: list[float],
+    values: list[float],
+    start_index: int,
+    end_index: int,
+    level: float,
+) -> float:
+    """Linearly interpolate when `values` first drops to `level`."""
+    if values[start_index] <= level:
+        return times[start_index]
+    for index in range(start_index + 1, end_index + 1):
+        previous = values[index - 1]
+        current = values[index]
+        if current <= level and previous > level:
+            span = previous - current
+            if span <= 0:
+                return times[index]
+            fraction = (previous - level) / span
+            return times[index - 1] + fraction * (
+                times[index] - times[index - 1]
+            )
+    return times[end_index]
+
+
 def analyze_reps(
     samples: list[tuple[float, float]],
     *,
@@ -494,13 +547,19 @@ def analyze_reps(
     min_rep_m: float,
     min_rep_duration_s: float,
 ) -> list[Rep]:
-    """Detect upward movements and measure their 10%-90% average speed.
+    """Detect reps and measure their up speed and, when present, down speed.
 
     Turns are found on a smoothed copy of the signal, so sensor noise does not
-    create spurious reps. An upward phase runs from a minimum to the following
-    maximum; its amplitude and duration must exceed the given limits. The
-    average speed is the distance covered between the 10% and 90% levels of
-    that amplitude divided by the time between those two crossings.
+    create spurious reps. A rep is an upward phase (minimum to maximum); the
+    downward phase (that maximum to the next minimum) is included when the
+    recording contains one. An up-phase without a following down is still a
+    valid rep. The up-phase must be at least `min_rep_m` tall and last at
+    least `min_rep_duration_s`; the down-phase is reported only when it is at
+    least `min_rep_m` tall.
+
+    Each speed is the distance covered between the 10% and 90% levels of that
+    phase's own amplitude divided by the time between those two crossings.
+    The down speed is measured over the 90%-10% part of the down-phase.
     """
     if len(samples) < 2:
         return []
@@ -512,50 +571,114 @@ def analyze_reps(
     logger.debug("found %d turns: %s", len(extrema), extrema)
 
     reps: list[Rep] = []
-    for (start_index, start_kind, _), (end_index, end_kind, end_confirmed) in zip(
-        extrema, extrema[1:]
-    ):
-        # The first turn of the recording is unconfirmed but still usable as
-        # a start, since a rep can begin at rest. A final unconfirmed peak,
-        # however, may mean the up-phase was cut off, so it is ignored.
-        if not end_confirmed:
+    last_position = len(extrema) - 1
+    for position, (up_start_index, up_start_kind, _) in enumerate(extrema):
+        if up_start_kind != "min" or position + 1 > last_position:
             continue
-        if start_kind != "min" or end_kind != "max":
+        top_index, top_kind, _ = extrema[position + 1]
+        if top_kind != "max":
             continue
 
-        amplitude = smoothed[end_index] - smoothed[start_index]
-        duration = times[end_index] - times[start_index]
-        if amplitude < min_rep_m or duration < min_rep_duration_s:
+        # The first turn of the recording is unconfirmed but still usable as
+        # a start, since a rep can begin at rest. An unconfirmed top is the
+        # last sample of the recording; the up-phase is kept anyway, because
+        # an up without a following down is still a valid rep.
+        up_amplitude = smoothed[top_index] - smoothed[up_start_index]
+        up_duration = times[top_index] - times[up_start_index]
+        if up_amplitude < min_rep_m or up_duration < min_rep_duration_s:
             logger.debug(
                 "ignoring up-phase at %.4f-%.4f s: amplitude %.3f m, "
                 "duration %.3f s",
-                times[start_index],
-                times[end_index],
-                amplitude,
-                duration,
+                times[up_start_index],
+                times[top_index],
+                up_amplitude,
+                up_duration,
             )
             continue
 
-        lower = smoothed[start_index] + 0.10 * amplitude
-        upper = smoothed[start_index] + 0.90 * amplitude
-        t10 = crossing_time(times, smoothed, start_index, end_index, lower)
-        t90 = crossing_time(times, smoothed, start_index, end_index, upper)
-        if t90 <= t10:
+        up_lower = smoothed[up_start_index] + 0.10 * up_amplitude
+        up_upper = smoothed[up_start_index] + 0.90 * up_amplitude
+        up_t10 = crossing_time(
+            times, smoothed, up_start_index, top_index, up_lower
+        )
+        up_t90 = crossing_time(
+            times, smoothed, up_start_index, top_index, up_upper
+        )
+        if up_t90 <= up_t10:
             logger.debug(
-                "ignoring up-phase at %.4f-%.4f s: no usable 10%%-90%% window",
-                times[start_index],
-                times[end_index],
+                "ignoring up-phase at %.4f-%.4f s: no usable speed window",
+                times[up_start_index],
+                times[top_index],
             )
             continue
+
+        down_start_s: float | None = None
+        down_end_s: float | None = None
+        down_t90_s: float | None = None
+        down_t10_s: float | None = None
+        down_amplitude_m: float | None = None
+        down_speed_m_s: float | None = None
+
+        if position + 2 <= last_position:
+            down_end_index, down_end_kind, down_end_confirmed = extrema[
+                position + 2
+            ]
+            down_is_usable = down_end_confirmed or position + 2 == last_position
+            if down_end_kind == "min" and down_is_usable:
+                down_amplitude = (
+                    smoothed[top_index] - smoothed[down_end_index]
+                )
+                if down_amplitude >= min_rep_m:
+                    down_lower = (
+                        smoothed[down_end_index] + 0.10 * down_amplitude
+                    )
+                    down_upper = (
+                        smoothed[down_end_index] + 0.90 * down_amplitude
+                    )
+                    down_t90 = descending_crossing_time(
+                        times, smoothed, top_index, down_end_index, down_upper
+                    )
+                    down_t10 = descending_crossing_time(
+                        times, smoothed, top_index, down_end_index, down_lower
+                    )
+                    if down_t10 > down_t90:
+                        down_start_s = times[top_index]
+                        down_end_s = times[down_end_index]
+                        down_t90_s = down_t90
+                        down_t10_s = down_t10
+                        down_amplitude_m = down_amplitude
+                        down_speed_m_s = (down_upper - down_lower) / (
+                            down_t10 - down_t90
+                        )
+                    else:
+                        logger.debug(
+                            "no usable down speed for rep at %.4f-%.4f s",
+                            times[up_start_index],
+                            times[top_index],
+                        )
+                else:
+                    logger.debug(
+                        "no down data for rep at %.4f-%.4f s: "
+                        "down amplitude %.3f m",
+                        times[up_start_index],
+                        times[top_index],
+                        down_amplitude,
+                    )
 
         reps.append(
             Rep(
-                start_s=times[start_index],
-                end_s=times[end_index],
-                t10_s=t10,
-                t90_s=t90,
-                amplitude_m=amplitude,
-                avg_speed_m_s=(upper - lower) / (t90 - t10),
+                up_start_s=times[up_start_index],
+                up_end_s=times[top_index],
+                up_t10_s=up_t10,
+                up_t90_s=up_t90,
+                up_amplitude_m=up_amplitude,
+                up_speed_m_s=(up_upper - up_lower) / (up_t90 - up_t10),
+                down_start_s=down_start_s,
+                down_end_s=down_end_s,
+                down_t90_s=down_t90_s,
+                down_t10_s=down_t10_s,
+                down_amplitude_m=down_amplitude_m,
+                down_speed_m_s=down_speed_m_s,
             )
         )
     logger.debug("detected %d reps", len(reps))
@@ -590,26 +713,43 @@ def format_samples(samples: list[tuple[float, float]]) -> str:
     return format_table(header, rows)
 
 
+def format_optional(value: float | None, spec: str) -> str:
+    """Format a number, or return a dash when it is missing."""
+    return "-" if value is None else format(value, spec)
+
+
 def format_reps(reps: list[Rep]) -> str:
     """Render the detected reps as a table."""
     header = (
         "rep",
-        "start_s",
-        "end_s",
-        "t10_s",
-        "t90_s",
-        "amplitude_m",
-        "avg_speed_m_s",
+        "up_start_s",
+        "up_end_s",
+        "up_t10_s",
+        "up_t90_s",
+        "up_amplitude_m",
+        "up_speed_m_s",
+        "down_start_s",
+        "down_end_s",
+        "down_t90_s",
+        "down_t10_s",
+        "down_amplitude_m",
+        "down_speed_m_s",
     )
     rows = [
         (
             str(number),
-            f"{rep.start_s:.4f}",
-            f"{rep.end_s:.4f}",
-            f"{rep.t10_s:.4f}",
-            f"{rep.t90_s:.4f}",
-            f"{rep.amplitude_m:.3f}",
-            f"{rep.avg_speed_m_s:.3f}",
+            f"{rep.up_start_s:.4f}",
+            f"{rep.up_end_s:.4f}",
+            f"{rep.up_t10_s:.4f}",
+            f"{rep.up_t90_s:.4f}",
+            f"{rep.up_amplitude_m:.3f}",
+            f"{rep.up_speed_m_s:.3f}",
+            format_optional(rep.down_start_s, ".4f"),
+            format_optional(rep.down_end_s, ".4f"),
+            format_optional(rep.down_t90_s, ".4f"),
+            format_optional(rep.down_t10_s, ".4f"),
+            format_optional(rep.down_amplitude_m, ".3f"),
+            format_optional(rep.down_speed_m_s, ".3f"),
         )
         for number, rep in enumerate(reps, start=1)
     ]
