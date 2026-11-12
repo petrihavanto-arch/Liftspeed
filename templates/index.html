@@ -146,7 +146,7 @@
       <div id="reps-empty" class="empty" hidden>No reps detected.</div>
     </section>
 
-    <section>
+    <section id="samples-section">
       <h2>Samples <span id="sample-summary"></span></h2>
       <div class="table-wrap">
         <table id="samples-table">
@@ -162,10 +162,17 @@
 <script>
   "use strict";
 
+  const SHOW_SAMPLES = {{ show_samples|tojson }};
+  const SHOW_DOWN_DATA = {{ show_down_data|tojson }};
+
   const button = document.getElementById("toggle");
   const statusEl = document.getElementById("status");
   const errorEl = document.getElementById("error");
   const resultsEl = document.getElementById("results");
+
+  if (!SHOW_SAMPLES) {
+    document.getElementById("samples-section").hidden = true;
+  }
 
   let running = false;
   let busy = false;
@@ -186,6 +193,10 @@
     { key: "down_amplitude_m", label: "down_amplitude_m", digits: 3 },
     { key: "down_speed_m_s", label: "down_speed_m_s", digits: 3 },
   ];
+
+  const REP_COLUMNS_TO_SHOW = SHOW_DOWN_DATA
+    ? REP_COLUMNS
+    : REP_COLUMNS.filter((column) => !column.key.startsWith("down_"));
 
   function formatCell(value, column) {
     if (value === null || value === undefined) return "\u2013";
@@ -256,10 +267,18 @@
     const samples = result.samples || [];
     const repRows = reps.map((rep, index) => ({ ...rep, rep: index + 1 }));
 
-    renderTable(document.getElementById("reps-table"), REP_COLUMNS, repRows);
+    renderTable(
+      document.getElementById("reps-table"),
+      REP_COLUMNS_TO_SHOW,
+      repRows
+    );
     document.getElementById("reps-empty").hidden = reps.length > 0;
     document.getElementById("rep-summary").textContent =
       reps.length === 1 ? "1 rep" : reps.length + " reps";
+
+    if (!SHOW_SAMPLES) {
+      return;
+    }
 
     const sampleColumns = [
       { key: "time_s", label: "time_s", digits: 4 },
