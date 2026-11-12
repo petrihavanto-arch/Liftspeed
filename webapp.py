@@ -27,6 +27,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template
 
 import main
+import sampler
 
 WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
 DEFAULT_HOST = "0.0.0.0"
@@ -80,7 +81,7 @@ class SamplerManager:
             sample_queue = context.Queue()
             stop_event = context.Event()
             process = context.Process(
-                target=main.sample_worker,
+                target=sampler.sample_worker,
                 args=(
                     float("inf"),
                     self._i2c_bus,
@@ -160,7 +161,7 @@ class SamplerManager:
     def _drain_locked(self) -> None:
         if self._sample_queue is None:
             return
-        error = main.drain_queue(self._sample_queue, self._samples)
+        error = sampler.drain_queue(self._sample_queue, self._samples)
         if error is not None:
             self._error = error
 
@@ -294,7 +295,7 @@ def main_cli(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    main.configure_logging(args.debug, WEBAPP_LOG_PATH)
+    sampler.configure_logging(args.debug, WEBAPP_LOG_PATH)
     logger.debug("starting web server with arguments: %s", args)
 
     manager = SamplerManager(
