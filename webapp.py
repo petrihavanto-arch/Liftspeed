@@ -70,6 +70,7 @@ class SamplerManager:
         self._elapsed_s = 0.0
         self._running = False
         self._result: dict | None = None
+        self._sets: list[list[float]] = []
 
     def start(self) -> dict:
         """Start sampling; return the current status."""
@@ -144,8 +145,13 @@ class SamplerManager:
             return {
                 "samples": [],
                 "reps": [],
+                "sets": self._sets_copy(),
                 "error": self._error,
             }
+
+    def _sets_copy(self) -> list[list[float]]:
+        """Return the completed sets, safe to serialise outside the lock."""
+        return [list(up_speeds) for up_speeds in self._sets]
 
     def _status_locked(self) -> dict:
         if self._running and self._started_at is not None:
@@ -156,6 +162,7 @@ class SamplerManager:
             "elapsed_s": round(self._elapsed_s, 2),
             "error": self._error,
             "has_result": self._result is not None,
+            "sets": self._sets_copy(),
         }
 
     def _drain_locked(self) -> None:
@@ -194,9 +201,14 @@ class SamplerManager:
             min_rep_duration_s=main.DEFAULT_MIN_REP_DURATION_S,
         )
 
+        # Each Start/Stop cycle is one set; only the up speeds are kept for
+        # the accumulated sets view.
+        self._sets.append([rep.up_speed_m_s for rep in reps])
+
         self._result = {
             "samples": [[t, distance] for t, distance in self._samples],
             "reps": [dataclasses.asdict(rep) for rep in reps],
+            "sets": self._sets_copy(),
             "error": self._error,
         }
         self._running = False
@@ -204,9 +216,10 @@ class SamplerManager:
         self._sample_queue = None
         self._stop_event = None
         logger.debug(
-            "sampler stopped with %d samples and %d reps",
+            "sampler stopped with %d samples, %d reps, %d sets",
             len(self._samples),
             len(reps),
+            len(self._sets),
         )
 
 

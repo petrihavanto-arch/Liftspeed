@@ -125,7 +125,7 @@
 <body>
 <main>
   <h1>Liftspeed</h1>
-  <p class="subtitle">Start sampling, lift the sensor target, then stop to see the samples and reps.</p>
+  <p class="subtitle">Start sampling, lift the sensor target, then stop. Each Start/Stop run is a set; its up speeds are added as a new column.</p>
 
   <div class="controls">
     <button id="toggle" type="button">Start</button>
@@ -133,6 +133,17 @@
   </div>
 
   <div id="error" class="error" hidden></div>
+
+  <section id="sets-section" hidden>
+    <h2>Sets &mdash; up speed (m/s) <span id="sets-summary"></span></h2>
+    <div class="table-wrap">
+      <table id="sets-table">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="sets-empty" class="empty" hidden>No reps in any set yet.</div>
+  </section>
 
   <div id="results" hidden>
     <section>
@@ -169,6 +180,7 @@
   const statusEl = document.getElementById("status");
   const errorEl = document.getElementById("error");
   const resultsEl = document.getElementById("results");
+  const setsSection = document.getElementById("sets-section");
 
   if (!SHOW_SAMPLES) {
     document.getElementById("samples-section").hidden = true;
@@ -229,6 +241,47 @@
     }
   }
 
+  function updateSets(sets) {
+    const completed = sets || [];
+    setsSection.hidden = completed.length === 0;
+    if (completed.length === 0) {
+      return;
+    }
+
+    const columns = [{ key: "rep", label: "rep", digits: 0, plain: true }];
+    completed.forEach((_, index) => {
+      columns.push({
+        key: "set" + index,
+        label: "Set " + (index + 1),
+        digits: 3,
+      });
+    });
+
+    const rowCount = completed.reduce(
+      (maximum, upSpeeds) => Math.max(maximum, upSpeeds.length),
+      0
+    );
+    const rows = [];
+    for (let row = 0; row < rowCount; row++) {
+      const entry = { rep: row + 1 };
+      completed.forEach((upSpeeds, index) => {
+        entry["set" + index] = upSpeeds[row];
+      });
+      rows.push(entry);
+    }
+
+    renderTable(document.getElementById("sets-table"), columns, rows);
+    document.getElementById("sets-empty").hidden = rowCount > 0;
+
+    const totalReps = completed.reduce(
+      (total, upSpeeds) => total + upSpeeds.length,
+      0
+    );
+    document.getElementById("sets-summary").textContent =
+      completed.length + (completed.length === 1 ? " set" : " sets") +
+      ", " + totalReps + (totalReps === 1 ? " rep" : " reps");
+  }
+
   function showError(message) {
     if (!message) {
       errorEl.hidden = true;
@@ -251,6 +304,7 @@
       statusEl.textContent = "Ready.";
     }
     showError(status.error);
+    updateSets(status.sets || []);
   }
 
   function setRunning(next) {
@@ -262,6 +316,7 @@
   function renderResult(result) {
     resultsEl.hidden = false;
     showError(result.error);
+    updateSets(result.sets || []);
 
     const reps = result.reps || [];
     const samples = result.samples || [];
