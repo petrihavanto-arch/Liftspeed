@@ -5,7 +5,8 @@ single toggle button that starts and stops the sampler. While sampling, the
 page shows the elapsed time and sample count; after stopping it adds that
 run's up speeds as a new column in the Sets table. The full rep table, raw
 samples, and down-phase columns are opt-in with ``-r/--reps-too``,
-``-s/--samples``, and ``--down-data-too``.
+``-s/--samples``, and ``--down-data-too``. The New Block button writes the
+accumulated sets to a timestamped CSV file in ``log/`` and clears them.
 
 The sampler itself is the same background process used by ``main.py``. The
 server keeps one sampler at a time in memory; it is not a multi-client or
@@ -19,11 +20,13 @@ sensor when testing without hardware.
 """
 
 import argparse
+import csv
 import dataclasses
 import logging
 import multiprocessing
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template
@@ -32,6 +35,7 @@ import main
 import sampler
 
 WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
+BLOCK_LOG_DIR = Path(__file__).resolve().parent / "log"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
 
@@ -55,12 +59,14 @@ class SamplerManager:
         i2c_address: int,
         debug: bool,
         log_path: Path = WEBAPP_LOG_PATH,
+        block_log_dir: Path = BLOCK_LOG_DIR,
     ) -> None:
         self._platform = platform
         self._i2c_bus = i2c_bus
         self._i2c_address = i2c_address
         self._debug = debug
         self._log_path = log_path
+        self._block_log_dir = block_log_dir
 
         self._lock = threading.Lock()
         self._process = None
@@ -150,6 +156,52 @@ class SamplerManager:
                 "sets": self._sets_copy(),
                 "error": self._error,
             }
+
+    def new_block(self) -> dict:
+        """Write the completed sets to a CSV file and clear them.
+
+        The file is named after the local time in ISO 8601 form and placed in
+        the block log directory. Starting a new block discards the in-memory
+        sets, so the next Start/Stop run begins a fresh block.
+        """
+        with self._lock:
+            if self._running:
+                raise RuntimeError("stop sampling before starting a new block")
+            if not self._sets:
+                raise RuntimeError("there is no collected data to save")
+
+            path = self._write_block_locked()
+            self._sets = []
+            self._samples = []
+            self._result = None
+            self._error = None
+            self._elapsed_s = 0.0
+            logger.debug("saved block to %s", path)
+            return {
+                "file": str(path),
+                "sets": self._sets_copy(),
+            }
+
+    def _write_block_locked(self) -> Path:
+        """Write the accumulated sets as long-format CSV and return the path."""
+        self._block_log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Colons are not valid in Windows filenames, so use dashes in the
+        # time part while keeping the ISO 8601 ordering.
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H-%M-%S")
+        path = self._block_log_dir / f"{stamp}_Block_data.csv"
+        suffix = 1
+        while path.exists():
+            path = self._block_log_dir / f"{stamp}-{suffix}_Block_data.csv"
+            suffix += 1
+
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["set", "rep", "up_speed_m_s"])
+            for set_number, up_speeds in enumerate(self._sets, start=1):
+                for rep_number, speed in enumerate(up_speeds, start=1):
+                    writer.writerow([set_number, rep_number, f"{speed:.6f}"])
+        return path
 
     def _sets_copy(self) -> list[list[float]]:
         """Return the completed sets, safe to serialise outside the lock."""
@@ -335,6 +387,14 @@ def create_app(
     @app.get("/api/status")
     def status():
         return jsonify(manager.status())
+
+    @app.post("/api/new-block")
+    def new_block():
+        try:
+            saved = manager.new_block()
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify(saved)
 
     return app
 

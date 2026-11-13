@@ -63,6 +63,21 @@
     #toggle:hover:not(:disabled) { filter: brightness(1.08); }
     #toggle.stop { background: var(--danger); }
     #toggle:disabled { opacity: 0.6; cursor: wait; }
+    #new-block {
+      padding: 12px 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #new-block:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    #new-block:disabled { opacity: 0.5; cursor: not-allowed; }
     #status { color: var(--muted); font-variant-numeric: tabular-nums; }
     #status .running { color: var(--accent); font-weight: 600; }
     .error {
@@ -129,6 +144,7 @@
 
   <div class="controls">
     <button id="toggle" type="button">Start</button>
+    <button id="new-block" type="button" title="Save the collected sets to ./log and start a new block" disabled>New Block</button>
     <div id="status">Ready.</div>
   </div>
 
@@ -178,6 +194,7 @@
   const SHOW_DOWN_DATA = {{ show_down_data|tojson }};
 
   const button = document.getElementById("toggle");
+  const newBlockButton = document.getElementById("new-block");
   const statusEl = document.getElementById("status");
   const errorEl = document.getElementById("error");
   const resultsEl = document.getElementById("results");
@@ -194,6 +211,11 @@
   let running = false;
   let busy = false;
   let pollTimer = null;
+  let setCount = 0;
+
+  function updateNewBlockButton() {
+    newBlockButton.disabled = running || busy || setCount === 0;
+  }
 
   const REP_COLUMNS = [
     { key: "rep", label: "rep", digits: 0, plain: true },
@@ -248,6 +270,8 @@
 
   function updateSets(sets) {
     const completed = sets || [];
+    setCount = completed.length;
+    updateNewBlockButton();
     setsSection.hidden = completed.length === 0;
     if (completed.length === 0) {
       return;
@@ -316,6 +340,7 @@
     running = next;
     button.textContent = next ? "Stop" : "Start";
     button.classList.toggle("stop", next);
+    updateNewBlockButton();
   }
 
   function renderResult(result) {
@@ -405,6 +430,7 @@
     if (busy) return;
     busy = true;
     button.disabled = true;
+    updateNewBlockButton();
     try {
       if (!running) {
         clearTimeout(pollTimer);
@@ -428,6 +454,25 @@
     } finally {
       busy = false;
       button.disabled = false;
+      updateNewBlockButton();
+    }
+  });
+
+  newBlockButton.addEventListener("click", async () => {
+    if (busy || running) return;
+    busy = true;
+    updateNewBlockButton();
+    try {
+      const saved = await request("/api/new-block", { method: "POST" });
+      updateSets(saved.sets || []);
+      clearResults();
+      const name = saved.file.split(/[\\/]/).pop();
+      statusEl.textContent = "Saved " + name + ".";
+    } catch (err) {
+      showError(err.message);
+    } finally {
+      busy = false;
+      updateNewBlockButton();
     }
   });
 
