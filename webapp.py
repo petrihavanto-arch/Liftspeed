@@ -2,8 +2,10 @@
 
 Run ``webapp.py`` and open the printed address in a browser. The page has a
 single toggle button that starts and stops the sampler. While sampling, the
-page shows the elapsed time and sample count; after stopping it shows the
-collected samples and the per-repetition analysis.
+page shows the elapsed time and sample count; after stopping it adds that
+run's up speeds as a new column in the Sets table. The full rep table, raw
+samples, and down-phase columns are opt-in with ``-r/--reps-too``,
+``-s/--samples``, and ``--down-data-too``.
 
 The sampler itself is the same background process used by ``main.py``. The
 server keeps one sampler at a time in memory; it is not a multi-client or
@@ -228,9 +230,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Serve a web page that starts and stops distance sampling and "
-            "shows the per-repetition up analysis. Use -s/--samples to also "
-            "show the raw samples and --down-data-too to also show the "
-            "down-phase columns."
+            "shows each set's up speeds. Use -r/--reps-too to also show the "
+            "full rep table, -s/--samples to also show the raw samples, and "
+            "--down-data-too to include the down-phase columns."
         ),
     )
     parser.add_argument(
@@ -263,9 +265,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "-r",
+        "--reps-too",
+        action="store_true",
+        help="show the full per-rep table in addition to the sets",
+    )
+    parser.add_argument(
         "--down-data-too",
         action="store_true",
-        help="show the down-phase columns in the rep table",
+        help="include the down-phase columns in the rep table (-r only)",
     )
     parser.add_argument(
         "--platform",
@@ -296,6 +304,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def create_app(
     manager: SamplerManager,
     *,
+    show_reps: bool = False,
     show_samples: bool = False,
     show_down_data: bool = False,
 ) -> Flask:
@@ -306,6 +315,7 @@ def create_app(
     def index():
         return render_template(
             "index.html",
+            show_reps=show_reps,
             show_samples=show_samples,
             show_down_data=show_down_data,
         )
@@ -345,6 +355,7 @@ def main_cli(argv: list[str] | None = None) -> int:
     )
     app = create_app(
         manager,
+        show_reps=args.reps_too,
         show_samples=args.samples,
         show_down_data=args.down_data_too,
     )

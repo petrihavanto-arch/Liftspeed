@@ -146,7 +146,7 @@
   </section>
 
   <div id="results" hidden>
-    <section>
+    <section id="reps-section">
       <h2>Reps <span id="rep-summary"></span></h2>
       <div class="table-wrap">
         <table id="reps-table">
@@ -173,6 +173,7 @@
 <script>
   "use strict";
 
+  const SHOW_REPS = {{ show_reps|tojson }};
   const SHOW_SAMPLES = {{ show_samples|tojson }};
   const SHOW_DOWN_DATA = {{ show_down_data|tojson }};
 
@@ -181,6 +182,10 @@
   const errorEl = document.getElementById("error");
   const resultsEl = document.getElementById("results");
   const setsSection = document.getElementById("sets-section");
+
+  if (!SHOW_REPS) {
+    document.getElementById("reps-section").hidden = true;
+  }
 
   if (!SHOW_SAMPLES) {
     document.getElementById("samples-section").hidden = true;
@@ -314,27 +319,32 @@
   }
 
   function renderResult(result) {
-    resultsEl.hidden = false;
+    resultsEl.hidden = !(SHOW_REPS || SHOW_SAMPLES);
     showError(result.error);
     updateSets(result.sets || []);
 
-    const reps = result.reps || [];
-    const samples = result.samples || [];
-    const repRows = reps.map((rep, index) => ({ ...rep, rep: index + 1 }));
+    if (SHOW_REPS) {
+      const reps = result.reps || [];
+      const repRows = reps.map((rep, index) => ({
+        ...rep,
+        rep: index + 1,
+      }));
 
-    renderTable(
-      document.getElementById("reps-table"),
-      REP_COLUMNS_TO_SHOW,
-      repRows
-    );
-    document.getElementById("reps-empty").hidden = reps.length > 0;
-    document.getElementById("rep-summary").textContent =
-      reps.length === 1 ? "1 rep" : reps.length + " reps";
+      renderTable(
+        document.getElementById("reps-table"),
+        REP_COLUMNS_TO_SHOW,
+        repRows
+      );
+      document.getElementById("reps-empty").hidden = reps.length > 0;
+      document.getElementById("rep-summary").textContent =
+        reps.length === 1 ? "1 rep" : reps.length + " reps";
+    }
 
     if (!SHOW_SAMPLES) {
       return;
     }
 
+    const samples = result.samples || [];
     const sampleColumns = [
       { key: "time_s", label: "time_s", digits: 4 },
       { key: "distance_m", label: "distance_m", digits: 3 },
