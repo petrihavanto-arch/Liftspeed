@@ -6,7 +6,8 @@ page shows the elapsed time and sample count; after stopping it adds that
 run's up speeds as a new column in the Sets table. The full rep table, raw
 samples, and down-phase columns are opt-in with ``-r/--reps-too``,
 ``-s/--samples``, and ``--down-data-too``. The New Block button writes the
-accumulated sets to a timestamped CSV file in ``log/`` and clears them.
+accumulated sets to a timestamped CSV file in ``log/``, named after the
+chosen exercise, and clears them.
 
 The sampler itself is the same background process used by ``main.py``. The
 server keeps one sampler at a time in memory; it is not a multi-client or
@@ -29,7 +30,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 import main
 import sampler
@@ -38,6 +39,7 @@ WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
 BLOCK_LOG_DIR = Path(__file__).resolve().parent / "log"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
+EXERCISES = ("BSS", "Seated press", "Bench press", "Pendlay", "Deadlift")
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -157,42 +159,50 @@ class SamplerManager:
                 "error": self._error,
             }
 
-    def new_block(self) -> dict:
+    def new_block(self, exercise: str) -> dict:
         """Write the completed sets to a CSV file and clear them.
 
-        The file is named after the local time in ISO 8601 form and placed in
-        the block log directory. Starting a new block discards the in-memory
-        sets, so the next Start/Stop run begins a fresh block.
+        The file is named after the local time in ISO 8601 form and the chosen
+        exercise, and placed in the block log directory. Starting a new block
+        discards the in-memory sets, so the next Start/Stop run begins a fresh
+        block.
         """
         with self._lock:
+            if exercise not in EXERCISES:
+                raise ValueError("choose an exercise before saving a block")
             if self._running:
                 raise RuntimeError("stop sampling before starting a new block")
             if not self._sets:
                 raise RuntimeError("there is no collected data to save")
 
-            path = self._write_block_locked()
+            path = self._write_block_locked(exercise)
             self._sets = []
             self._samples = []
             self._result = None
             self._error = None
             self._elapsed_s = 0.0
-            logger.debug("saved block to %s", path)
+            logger.debug("saved %s block to %s", exercise, path)
             return {
                 "file": str(path),
+                "exercise": exercise,
                 "sets": self._sets_copy(),
             }
 
-    def _write_block_locked(self) -> Path:
+    def _write_block_locked(self, exercise: str) -> Path:
         """Write the accumulated sets as long-format CSV and return the path."""
         self._block_log_dir.mkdir(parents=True, exist_ok=True)
 
         # Colons are not valid in Windows filenames, so use dashes in the
         # time part while keeping the ISO 8601 ordering.
         stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H-%M-%S")
-        path = self._block_log_dir / f"{stamp}_Block_data.csv"
+        exercise_slug = exercise.replace(" ", "_")
+        path = self._block_log_dir / f"{stamp}_{exercise_slug}_Block_data.csv"
         suffix = 1
         while path.exists():
-            path = self._block_log_dir / f"{stamp}-{suffix}_Block_data.csv"
+            path = (
+                self._block_log_dir
+                / f"{stamp}-{suffix}_{exercise_slug}_Block_data.csv"
+            )
             suffix += 1
 
         with path.open("w", encoding="utf-8", newline="") as handle:
@@ -367,6 +377,7 @@ def create_app(
     def index():
         return render_template(
             "index.html",
+            exercises=EXERCISES,
             show_reps=show_reps,
             show_samples=show_samples,
             show_down_data=show_down_data,
@@ -390,8 +401,14 @@ def create_app(
 
     @app.post("/api/new-block")
     def new_block():
+        payload = request.get_json(silent=True) or {}
+        exercise = payload.get("exercise")
+        if not isinstance(exercise, str):
+            exercise = ""
         try:
-            saved = manager.new_block()
+            saved = manager.new_block(exercise)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
         return jsonify(saved)
