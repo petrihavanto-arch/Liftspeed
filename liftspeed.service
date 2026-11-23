@@ -1,0 +1,15 @@
+[Unit]
+Description=Liftspeed web app
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/python/Liftspeed
+ExecStart=/home/pi/python/Liftspeed/.venv/bin/python webapp.py --host 0.0.0.0 --port 5000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
