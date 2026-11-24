@@ -8,7 +8,7 @@ samples, and down-phase columns are opt-in with ``-r/--reps-too``,
 ``-s/--samples``, and ``--down-data-too``. The New Block button writes the
 accumulated sets to a timestamped CSV file in ``log/``, named after the
 chosen exercise, plus a ``_long`` CSV with every raw sensor reading and its
-time; then it clears them.
+time; then it clears them. On Ctrl-C, accumulated data is saved as ``Unnamed``.
 
 The sampler itself is the same background process used by ``main.py``. The
 server keeps one sampler at a time in memory; it is not a multi-client or
@@ -40,7 +40,7 @@ WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
 BLOCK_LOG_DIR = Path(__file__).resolve().parent / "log"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
-EXERCISES = ("BSS", "Seated press", "Bench press", "Pendlay", "Deadlift")
+EXERCISES = ("BSS", "Seated Press", "Pendlay", "St_Squat", "Bench press", "Deadlift")
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -160,6 +160,24 @@ class SamplerManager:
                 "sets": self._sets_copy(),
                 "error": self._error,
             }
+
+    def save_interrupted(self) -> tuple[Path, Path] | None:
+        """Stop any active sampler and save collected data as ``Unnamed``."""
+        with self._lock:
+            if self._running or self._process is not None:
+                self._finalize_locked()
+            if not self._sets:
+                logger.debug("Ctrl-C received with no collected data to save")
+                return None
+            paths = self._write_block_locked("Unnamed")
+            logger.info("saved interrupted data to %s and %s", *paths)
+            self._sets = []
+            self._block_samples = []
+            self._samples = []
+            self._result = None
+            self._error = None
+            self._elapsed_s = 0.0
+            return paths
 
     def new_block(self, exercise: str) -> dict:
         """Write both block reports and clear the collected data.
@@ -472,7 +490,17 @@ def main_cli(argv: list[str] | None = None) -> int:
         )
     # The reloader would start a second sampler manager in a child process.
     # -d only adds our log file; Flask's debugger stays off.
-    app.run(host=args.host, port=args.port, use_reloader=False)
+    try:
+        app.run(host=args.host, port=args.port, use_reloader=False)
+    except KeyboardInterrupt:
+        try:
+            saved = manager.save_interrupted()
+            if saved is not None:
+                print(f"Saved interrupted data to {saved[0]} and {saved[1]}.", flush=True)
+        except OSError:
+            logger.exception("failed to save data after Ctrl-C")
+            return 1
+        return 130
     return 0
 
 
