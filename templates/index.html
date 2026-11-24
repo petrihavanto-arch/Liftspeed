@@ -529,7 +529,8 @@
         input.checked = false;
       }
       const name = saved.file.split(/[\\/]/).pop();
-      statusEl.textContent = "Saved " + name + ".";
+      const longName = saved.long_file.split(/[\\/]/).pop();
+      statusEl.textContent = "Saved " + name + " and " + longName + ".";
     } catch (err) {
       showError(err.message);
     } finally {

@@ -7,7 +7,8 @@ run's up speeds as a new column in the Sets table. The full rep table, raw
 samples, and down-phase columns are opt-in with ``-r/--reps-too``,
 ``-s/--samples``, and ``--down-data-too``. The New Block button writes the
 accumulated sets to a timestamped CSV file in ``log/``, named after the
-chosen exercise, and clears them.
+chosen exercise, plus a ``_long`` CSV with every raw sensor reading and its
+time; then it clears them.
 
 The sampler itself is the same background process used by ``main.py``. The
 server keeps one sampler at a time in memory; it is not a multi-client or
@@ -81,6 +82,7 @@ class SamplerManager:
         self._running = False
         self._result: dict | None = None
         self._sets: list[list[float]] = []
+        self._block_samples: list[tuple[int, float, float]] = []
 
     def start(self) -> dict:
         """Start sampling; return the current status."""
@@ -160,12 +162,13 @@ class SamplerManager:
             }
 
     def new_block(self, exercise: str) -> dict:
-        """Write the completed sets to a CSV file and clear them.
+        """Write both block reports and clear the collected data.
 
-        The file is named after the local time in ISO 8601 form and the chosen
-        exercise, and placed in the block log directory. Starting a new block
-        discards the in-memory sets, so the next Start/Stop run begins a fresh
-        block.
+        The files are named after the local time in ISO 8601 form and the
+        chosen exercise, and placed in the block log directory. One holds the
+        up speeds per set/rep; the ``_long`` one holds every raw reading with
+        its time. Starting a new block discards the in-memory data, so the
+        next Start/Stop run begins a fresh block.
         """
         with self._lock:
             if exercise not in EXERCISES:
@@ -175,35 +178,26 @@ class SamplerManager:
             if not self._sets:
                 raise RuntimeError("there is no collected data to save")
 
-            path = self._write_block_locked(exercise)
+            path, long_path = self._write_block_locked(exercise)
             self._sets = []
+            self._block_samples = []
             self._samples = []
             self._result = None
             self._error = None
             self._elapsed_s = 0.0
-            logger.debug("saved %s block to %s", exercise, path)
+            logger.debug(
+                "saved %s block to %s and %s", exercise, path, long_path
+            )
             return {
                 "file": str(path),
+                "long_file": str(long_path),
                 "exercise": exercise,
                 "sets": self._sets_copy(),
             }
 
-    def _write_block_locked(self, exercise: str) -> Path:
-        """Write the accumulated sets as long-format CSV and return the path."""
-        self._block_log_dir.mkdir(parents=True, exist_ok=True)
-
-        # Colons are not valid in Windows filenames, so use dashes in the
-        # time part while keeping the ISO 8601 ordering.
-        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H-%M-%S")
-        exercise_slug = exercise.replace(" ", "_")
-        path = self._block_log_dir / f"{stamp}_{exercise_slug}_Block_data.csv"
-        suffix = 1
-        while path.exists():
-            path = (
-                self._block_log_dir
-                / f"{stamp}-{suffix}_{exercise_slug}_Block_data.csv"
-            )
-            suffix += 1
+    def _write_block_locked(self, exercise: str) -> tuple[Path, Path]:
+        """Write the summary and long CSV reports, returning both paths."""
+        path, long_path = self._block_paths(exercise)
 
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
@@ -211,7 +205,35 @@ class SamplerManager:
             for set_number, up_speeds in enumerate(self._sets, start=1):
                 for rep_number, speed in enumerate(up_speeds, start=1):
                     writer.writerow([set_number, rep_number, f"{speed:.6f}"])
-        return path
+
+        with long_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["set", "time_s", "distance_m"])
+            for set_number, t, distance in self._block_samples:
+                writer.writerow(
+                    [set_number, f"{t:.4f}", f"{distance:.6f}"]
+                )
+        return path, long_path
+
+    def _block_paths(self, exercise: str) -> tuple[Path, Path]:
+        """Pick a free pair of summary/long filenames for this block."""
+        self._block_log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Colons are not valid in Windows filenames, so use dashes in the
+        # time part while keeping the ISO 8601 ordering.
+        stamp = datetime.now().astimezone().strftime("%Y-%m-%dT%H-%M-%S")
+        exercise_slug = exercise.replace(" ", "_")
+        base = f"{stamp}_{exercise_slug}"
+        path = self._block_log_dir / f"{base}_Block_data.csv"
+        long_path = self._block_log_dir / f"{base}_Block_data_long.csv"
+
+        suffix = 1
+        while path.exists() or long_path.exists():
+            base = f"{stamp}-{suffix}_{exercise_slug}"
+            path = self._block_log_dir / f"{base}_Block_data.csv"
+            long_path = self._block_log_dir / f"{base}_Block_data_long.csv"
+            suffix += 1
+        return path, long_path
 
     def _sets_copy(self) -> list[list[float]]:
         """Return the completed sets, safe to serialise outside the lock."""
@@ -265,8 +287,12 @@ class SamplerManager:
             min_rep_duration_s=main.DEFAULT_MIN_REP_DURATION_S,
         )
 
-        # Each Start/Stop cycle is one set; only the up speeds are kept for
-        # the accumulated sets view.
+        # Each Start/Stop cycle is one set; keep its up speeds and all of its
+        # raw readings for the two block reports.
+        set_number = len(self._sets) + 1
+        self._block_samples.extend(
+            (set_number, t, distance) for t, distance in self._samples
+        )
         self._sets.append([rep.up_speed_m_s for rep in reps])
 
         self._result = {
