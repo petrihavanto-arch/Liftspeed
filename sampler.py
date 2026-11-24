@@ -10,6 +10,7 @@ sensor module; on a PC use ``platform="pc"`` for the dummy sensor.
 """
 
 import logging
+import signal
 import time
 from pathlib import Path
 from queue import Empty
@@ -52,8 +53,11 @@ def sample_worker(
     """Background-process entry point: sample until the deadline or a stop request.
 
     Samples are streamed to `sample_queue` as ("sample", t, distance_m, valid)
-    tuples; a failure is reported as a single ("error", message) tuple.
+    tuples; a failure is reported as a single ("error", message) tuple. The
+    worker ignores Ctrl-C because the parent process handles the interrupt and
+    asks the worker to stop after it has saved the collected data.
     """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     configure_logging(debug, log_path)
     logger.debug("sampler process starting")
 
