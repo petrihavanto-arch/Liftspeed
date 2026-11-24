@@ -491,25 +491,42 @@ def main_cli(argv: list[str] | None = None) -> int:
         )
     # The reloader would start a second sampler manager in a child process.
     # -d only adds our log file; Flask's debugger stays off.
+    # Werkzeug swallows KeyboardInterrupt in serve_forever(), so app.run()
+    # returns normally after Ctrl-C. Record the interrupt in our own handler
+    # and save after app.run() has returned, rather than in an except block
+    # that Werkzeug prevents from running.
+    interrupted = False
+
+    def handle_sigint(signum, frame) -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise KeyboardInterrupt
+
+    previous_sigint_handler = signal.signal(signal.SIGINT, handle_sigint)
+    exit_code = 0
     try:
         app.run(host=args.host, port=args.port, use_reloader=False)
     except KeyboardInterrupt:
+        # Also covers an interrupt delivered outside Werkzeug's server loop.
+        interrupted = True
+    finally:
         # Avoid a second Ctrl-C aborting queue draining or the CSV write.
-        previous_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
-            saved = manager.save_interrupted()
-            if saved is not None:
-                print(
-                    f"Saved interrupted data to {saved[0]} and {saved[1]}.",
-                    flush=True,
-                )
+            if interrupted:
+                saved = manager.save_interrupted()
+                if saved is not None:
+                    print(
+                        f"Saved interrupted data to {saved[0]} and {saved[1]}.",
+                        flush=True,
+                    )
+                exit_code = 130
         except Exception:  # noqa: BLE001 - report save/finalization failures
             logger.exception("failed to save data after Ctrl-C")
-            return 1
+            exit_code = 1
         finally:
             signal.signal(signal.SIGINT, previous_sigint_handler)
-        return 130
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
