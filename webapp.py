@@ -26,6 +26,7 @@ import csv
 import dataclasses
 import logging
 import multiprocessing
+import signal
 import threading
 import time
 from datetime import datetime
@@ -167,7 +168,7 @@ class SamplerManager:
             if self._running or self._process is not None:
                 self._finalize_locked()
             if not self._sets:
-                logger.debug("Ctrl-C received with no collected data to save")
+                logger.info("Ctrl-C received with no collected data to save")
                 return None
             paths = self._write_block_locked("Unnamed")
             logger.info("saved interrupted data to %s and %s", *paths)
@@ -493,13 +494,20 @@ def main_cli(argv: list[str] | None = None) -> int:
     try:
         app.run(host=args.host, port=args.port, use_reloader=False)
     except KeyboardInterrupt:
+        # Avoid a second Ctrl-C aborting queue draining or the CSV write.
+        previous_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             saved = manager.save_interrupted()
             if saved is not None:
-                print(f"Saved interrupted data to {saved[0]} and {saved[1]}.", flush=True)
-        except OSError:
+                print(
+                    f"Saved interrupted data to {saved[0]} and {saved[1]}.",
+                    flush=True,
+                )
+        except Exception:  # noqa: BLE001 - report save/finalization failures
             logger.exception("failed to save data after Ctrl-C")
             return 1
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint_handler)
         return 130
     return 0
 
