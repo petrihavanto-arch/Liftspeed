@@ -41,6 +41,10 @@ WEBAPP_LOG_PATH = Path(__file__).resolve().with_suffix(".log")
 BLOCK_LOG_DIR = Path(__file__).resolve().parent / "log"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 5000
+# Shortest lift counted in the web UI's rep/sets statistics; shorter ones are
+# rejected by the analysis. Both defaults can be overridden on the command line.
+MIN_VALID_LIFT_MM = 150.0
+DEFAULT_MIN_REP_DURATION_S = 0.2
 EXERCISES = ("BSS", "Seated Press", "Pendlay", "St_Squat", "Bench press", "Deadlift")
 
 logger = logging.getLogger(__name__)
@@ -64,6 +68,8 @@ class SamplerManager:
         debug: bool,
         log_path: Path = WEBAPP_LOG_PATH,
         block_log_dir: Path = BLOCK_LOG_DIR,
+        min_rep_mm: float = MIN_VALID_LIFT_MM,
+        min_rep_duration_s: float = DEFAULT_MIN_REP_DURATION_S,
     ) -> None:
         self._platform = platform
         self._i2c_bus = i2c_bus
@@ -71,6 +77,8 @@ class SamplerManager:
         self._debug = debug
         self._log_path = log_path
         self._block_log_dir = block_log_dir
+        self._min_rep_m = min_rep_mm / 1000.0
+        self._min_rep_duration_s = min_rep_duration_s
 
         self._lock = threading.Lock()
         self._process = None
@@ -302,8 +310,8 @@ class SamplerManager:
             self._samples,
             smooth_window=main.DEFAULT_SMOOTH_WINDOW,
             turn_threshold_m=main.DEFAULT_TURN_THRESHOLD_MM / 1000.0,
-            min_rep_m=main.DEFAULT_MIN_REP_MM / 1000.0,
-            min_rep_duration_s=main.DEFAULT_MIN_REP_DURATION_S,
+            min_rep_m=self._min_rep_m,
+            min_rep_duration_s=self._min_rep_duration_s,
         )
 
         # Each Start/Stop cycle is one set; keep its up speeds and all of its
@@ -339,7 +347,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Serve a web page that starts and stops distance sampling and "
             "shows each set's up speeds. Use -r/--reps-too to also show the "
             "full rep table, -s/--samples to also show the raw samples, and "
-            "--down-data-too to include the down-phase columns."
+            "--down-data-too to include the down-phase columns. "
+            "--min-rep-mm and --min-rep-duration control which lifts count "
+            "as reps."
         ),
     )
     parser.add_argument(
@@ -381,6 +391,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--down-data-too",
         action="store_true",
         help="include the down-phase columns in the rep table (-r only)",
+    )
+    parser.add_argument(
+        "--min-rep-mm",
+        type=float,
+        default=MIN_VALID_LIFT_MM,
+        metavar="MM",
+        help=(
+            "smallest up-phase counted as a rep, and smallest down-phase "
+            f"reported, in millimetres (default: {MIN_VALID_LIFT_MM:g})"
+        ),
+    )
+    parser.add_argument(
+        "--min-rep-duration",
+        type=float,
+        default=DEFAULT_MIN_REP_DURATION_S,
+        metavar="SECONDS",
+        help=(
+            "shortest up-phase of a rep, in seconds "
+            f"(default: {DEFAULT_MIN_REP_DURATION_S:g})"
+        ),
     )
     parser.add_argument(
         "--platform",
@@ -464,6 +494,10 @@ def create_app(
 def main_cli(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.min_rep_mm <= 0:
+        parser.error("--min-rep-mm must be greater than zero")
+    if args.min_rep_duration <= 0:
+        parser.error("--min-rep-duration must be greater than zero")
 
     sampler.configure_logging(args.debug, WEBAPP_LOG_PATH)
     logger.debug("starting web server with arguments: %s", args)
@@ -474,6 +508,8 @@ def main_cli(argv: list[str] | None = None) -> int:
         i2c_address=args.i2c_address,
         debug=args.debug,
         log_path=WEBAPP_LOG_PATH,
+        min_rep_mm=args.min_rep_mm,
+        min_rep_duration_s=args.min_rep_duration,
     )
     app = create_app(
         manager,

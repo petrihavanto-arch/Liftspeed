@@ -31,7 +31,9 @@ import sampler
 DEFAULT_DURATION_S = 5.0
 DEFAULT_SMOOTH_WINDOW = 3
 DEFAULT_TURN_THRESHOLD_MM = 3.0
-DEFAULT_MIN_REP_MM = 25.0
+# Shortest lift counted in the rep/sets statistics; shorter up-phases are
+# ignored, and down-phases shorter than this are not reported.
+DEFAULT_MIN_REP_MM = 150.0
 DEFAULT_MIN_REP_DURATION_S = 0.2
 LOG_PATH = Path(__file__).resolve().with_suffix(".log")
 
